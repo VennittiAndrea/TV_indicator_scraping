@@ -4,10 +4,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Set up logging unit
-def setupLogging(current_dir: str) -> None: 
+def setupLogging(current_dir: str, log_level : str = 'DEBUG') -> None: 
     # Define logging file path
     log_dir = os.path.join(current_dir, 'logs')
-    log_level = os.getenv('LOG_LEVEL')
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
     log_file_path = os.path.join(log_dir, "ms.log")

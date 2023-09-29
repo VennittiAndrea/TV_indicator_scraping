@@ -20,7 +20,7 @@ def read_config(current_dir: str) -> dict:
     # Define settings file path
     config_file_path = os.path.join(current_dir, 'config', 'settings.ini')
     # Read configuration file
-    config = configparser.ConfigParser()
+    config = configparser.ConfigParser(interpolation=None)
     config.read(config_file_path)
     logger.info(f'Read configuration file: {config_file_path}')
     return _read_config_to_dict(config)

@@ -1,8 +1,14 @@
 '''NOTES
-- Improve method for getting in with cookies. Check how to remember. I think that cookies are fine, maybe session is used. 
-- Devo solo scaricare i dati e sono a posto. Faccio ricerca di elementi comuni per scarciare tutti i dati di interese.
+- Thread creation: take code from old data reading in discord app with websocket and threading
+- Improve data manipulation and storing
 - Devo vedere con che velocità posso andare ad estrarre i dati.
+- Logging must be added
 '''
+import os 
+import time 
+import pickle 
+import logging 
+import threading
 
 from selenium import webdriver
 from selenium.webdriver.support.ui import WebDriverWait
@@ -21,14 +27,16 @@ LOAD = 5
 
 class TradingView:
 
-    def __init__(self, options= None, headless: bool = False, username : str = None, password: str = None, adv_url: str = 'https://it.tradingview.com/chart/4FNrxQbz/?symbol=OANDA%3AEURUSD', dwnl_path : str = '../data/'):
+    def __init__(self, options= None, headless: bool = False, username : str = None, password: str = None, adv_url: str = 'https://it.tradingview.com/chart/4FNrxQbz/?symbol=OANDA%3AEURUSD', asset : str = 'OANDA:EURUSD', dwnl_path : str = '../data/'):
         if username is None or password is None:
             print('No username or password')
             raise ImportError('No username or password')
         self.bsc_url = "https://tradingview.com"
-        self.adv_url = adv_url
+        self.asset = asset
+        self.adv_url = adv_url + asset
         self.username = username
         self.password = password
+        self.data : dict = {}
 
         self.options = options
         self.headless = headless
@@ -47,6 +55,7 @@ class TradingView:
         prefs = {"download.default_directory": dwnl_path}
         chrome_options.add_experimental_option("prefs", prefs)
         #
+        print('Initializing Chrome browser...')
         # Start Chrome browser
         self.driver = webdriver.Chrome(options=chrome_options)
     
@@ -135,7 +144,14 @@ class TradingView:
         check_datawindow = self.driver.find_elements('xpath', "//div[contains(@class, 'content-')]//button[@aria-label = 'Finestra dati'][@aria-pressed='false']")
         if len(check_datawindow) > 0:
             print('Data window is closed')
-            check_datawindow.click() 
+            check_datawindow[0].click() 
+            time.sleep(SHORT)
+
+    def _add_to_dict_mutli(self, comp, name, value) -> None: 
+        if name in self.data_dict[comp]:
+            self.data_dict[comp][name].append(value)
+        else:
+            self.data_dict[comp][name] = [value]
 
     def _add_to_dict(self, name, value) -> None:
         if name in self.data_dict:
@@ -143,13 +159,15 @@ class TradingView:
         else:
             self.data_dict[name] = [value]
 
-    def _extract_values(self, values) -> None: 
+    def _extract_values(self, values, comp: str = None) -> None: 
         # Extract indicator name components with related values
-        values_dict : dict = {}
         for i in range(0,len(values),1):
             name = values[i].find_element('xpath', ".//div[contains(@class, 'itemTitle-')]").text
             value = values[i].find_element('xpath', ".//div/span").text
-            self._add_to_dict(name, value)
+            if comp: 
+                self._add_to_dict_mutli(comp, name, value)
+            else:
+                self._add_to_dict(name, value)
 
     def get_single_component_active(self, indicator_name: str = 'Ven_HARSI') -> None: 
         '''Explanation
@@ -225,7 +243,7 @@ class TradingView:
             if indicator_name in indicators_name: 
                 self.data_dict[indicator_name] = {}
                 values = components[k].find_elements('xpath', './/div[contains(@class, "values-")]/div')
-                self._extract_values(values)
+                self._extract_values(values, indicator_name)
     
 
     def get_multi_components(self, indicators_name: list = ['Ven_HARSI']) -> None:
@@ -245,24 +263,75 @@ class TradingView:
                     components[k].find_element_by_xpath(".//span[contains(@class, 'button-')]").click()
                 self.data_dict[indicator_name] = {}
                 values = components[k].find_elements('xpath', './/div[contains(@class, "values-")]/div')
-                self._extract_values(values)
+                self._extract_values(values, indicator_name)
 
 # At this point, I have to: 
 # - convert data to float (paying attention in particular case such as volume (with k at the end) or variation (with percentage component))
 # define thread for reading data every 1min to get new values (or less if sub 1min analysis is of interest)
 # - store data in a database or further data structure
 
+    def append_data(self) -> None: 
+        if len(self.data) == 0: 
+            self.data = self.data_dict
+        else: 
+            for k,v in self.data_dict.items():
+                for key,value in v.items():
+                    self.data[k][key] += self.data_dict[k][key]
+
+    def transform_data(self) -> None:
+        for k,v in self.data_dict.items():
+            if k == self.asset.split(':')[1]:
+                # data from asset 
+                self.data_dict[k]['Apertura'] = [float(self.data_dict[k]['Apertura'][0])]
+                self.data_dict[k]['Massimo'] = [float(self.data_dict[k]['Massimo'][0])]
+                self.data_dict[k]['Minimo'] = [float(self.data_dict[k]['Minimo'][0])]
+                self.data_dict[k]['Chiusura'] = [float(self.data_dict[k]['Chiusura'][0])]
+                self.data_dict[k]['Variazione'] = [self.data_dict[k]['Variazione'][0].split('(')[1][:-1].replace('−', '-')]
+                self.data_dict[k]['Vol'] = [float(self.data_dict[k]['Vol'][0])] if 'K' not in self.data_dict[k]['Vol'][0] else [float(self.data_dict[k]['Vol'][0].split('K')[0]) *1000]
+            elif k == 'Vol': 
+                # Transform data 
+                for key, value in v.items(): 
+                    self.data_dict[k][key] = [float(self.data_dict[k][key][0])] if 'K' not in self.data_dict[k][key][0] else [float(self.data_dict[k][key][0].split('K')[0]) *1000]
+            else: 
+                for key, value in v.items(): 
+                    if len(self.data_dict[k][key]) == 0: 
+                        self.data_dict[k][key] = [None]
+                    elif len(self.data_dict[k][key]) == 1: 
+                        self.data_dict[k][key] = [float(self.data_dict[k][key][0].replace('−', '-'))]
+                    elif len(self.data_dict[k][key]) > 1:
+                        self.data_dict[k][key] = [[float(i.replace('−', '-')) for i in self.data_dict[k][key]]]
+                    else: 
+                        raise ValueError(f'Problematic data for {k} {key}')
+        self.append_data()
+
     def end(self):
         """Closes the TV session"""
         self.driver.quit()
 
-
-if __name__ == "__main__":
-    adv_url = 'https://it.tradingview.com/chart/4FNrxQbz/?symbol=OANDA%3AEURUSD'
-    indicators_name = ['EURUSD', 'Vol', 'Ven_HARSI']
-    tv = TradingView(adv_url = adv_url)
-    tv.load_chart_with_cookies()
-    tv.get_layout(adv_url)
-    tv.get_multi_components(indicators_name)
-    print(tv.data_dict)
-    tv.end()
+    def start_thread(self,indicators_name: list, thread_time : int): 
+        self.i = 0
+        stop_thread = False
+        while not stop_thread: 
+            self.i += 1
+            self.get_multi_components(indicators_name)
+            # print(self.data_dict)
+            self.transform_data()
+            time.sleep(thread_time) #timing function
+            if self.i == 10: 
+                # Wait for the thread to finish, or stop after 5 seconds
+                print('Exiting thread...')
+                print(self.data)
+                stop_thread = True
+                self.end()
+            
+    def run(self,adv_url: str, indicators_name: list, thread_time : int= 60): 
+        self.load_chart_with_cookies()
+        self.get_layout(adv_url)
+        time.sleep(LONG)
+        # Create thread of execution of data reading
+        t = threading.Thread(target= lambda: self.start_thread(indicators_name=indicators_name, thread_time=thread_time))
+        t.daemon = True
+        t.start()
+        #time.sleep(LONG)
+        
+        
